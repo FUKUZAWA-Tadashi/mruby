@@ -1049,7 +1049,7 @@ heredoc_end(parser_state *p)
 
 %token <id>  tIDENTIFIER tFID tGVAR tIVAR tCONSTANT tCVAR tLABEL
 %token <nd>  tINTEGER tFLOAT tCHAR tXSTRING tREGEXP
-%token <nd>  tSTRING tSTRING_PART tSTRING_MID
+%token <nd>  tSTRING tSTRING_PART tSTRING_MID tSTRING_SP tHD_STRING_SP
 %token <nd>  tNTH_REF tBACK_REF
 %token <num> tREGEXP_END
 
@@ -1103,7 +1103,7 @@ heredoc_end(parser_state *p)
 %token tLAMBDA            /* -> */
 %token tSYMBEG tREGEXP_BEG tWORDS_BEG tSYMBOLS_BEG
 %token tSTRING_BEG tXSTRING_BEG tSTRING_DVAR tLAMBEG
-%token <nd> tHEREDOC_BEG  /* <<, <<- */
+%token <nd> tHEREDOC_BEG
 %token tHEREDOC_END tLITERAL_DELIM tHD_LITERAL_DELIM
 %token <nd> tHD_STRING_PART tHD_STRING_MID
 
@@ -2667,16 +2667,34 @@ string_interp   : tSTRING_MID
                     {
                       $$ = list1($1);
                     }
+        	| tSTRING_SP
+        	    {
+        	      $$ = list2($1, new_literal_delim(p));
+        	    }
+        	| tHD_STRING_SP heredoc_bodies
+        	    {
+        	      $$ = list2($1, new_literal_delim(p));
+        	    }
                 | tSTRING_PART
                     {
-                      $<nd>$ = p->lex_strterm;
-                      p->lex_strterm = NULL;
+        	      if (is_strterm_type(p, STR_FUNC_PROC))
+        		local_nest(p);
+        	      $<nd>$ = p->lex_strterm;
+        	      p->lex_strterm = NULL;
                     }
                   compstmt
                   '}'
                     {
-                      p->lex_strterm = $<nd>2;
-                      $$ = list2($1, $3);
+        	      p->lex_strterm = $<nd>2;
+        	      if (is_strterm_type(p, STR_FUNC_PROC)) {
+        		if ((int)(intptr_t)($1)->cdr->cdr == 0)
+        		  $$ = list1(new_block(p, 0, $3));
+        		else
+        		  $$ = list2($1, new_block(p, 0, $3));
+        		local_unnest(p);
+        	      }
+        	      else
+        		$$ = list2($1, $3);
                     }
                 | tLITERAL_DELIM
                     {
@@ -2743,15 +2761,25 @@ heredoc_string_interp : tHD_STRING_MID
                     }
                 | tHD_STRING_PART
                     {
+        	      if (is_strterm_type(p, STR_FUNC_PROC))
+        		local_nest(p);
                       $<nd>$ = p->lex_strterm;
                       p->lex_strterm = NULL;
                     }
                   compstmt
                   '}'
                     {
-                      parser_heredoc_info * inf = parsing_heredoc_inf(p);
-                      p->lex_strterm = $<nd>2;
-                      inf->doc = push(push(inf->doc, $1), $3);
+        	      parser_heredoc_info * inf = parsing_heredoc_inf(p);
+        	      p->lex_strterm = $<nd>2;
+        	      if (is_strterm_type(p, STR_FUNC_PROC)) {
+        		if ((int)(intptr_t)($1)->cdr->cdr == 0)
+        		  inf->doc = push(inf->doc, new_block(p, 0, $3));
+        		else
+        		  inf->doc = push(push(inf->doc, $1), new_block(p, 0, $3));
+        		local_unnest(p);
+        	      }
+        	      else
+        		inf->doc = push(push(inf->doc, $1), $3);
                     }
                 ;
 
@@ -3756,7 +3784,7 @@ parse_string(parser_state *p)
       }
       continue;
     }
-    else if ((c == '#') && (type & STR_FUNC_EXPAND)) {
+    if ((c == '#') && (type & (STR_FUNC_EXPAND|STR_FUNC_PROC))) {
       c = nextc(p);
       if (c == '{') {
         tokfix(p);
@@ -3773,25 +3801,55 @@ parse_string(parser_state *p)
       pushback(p, c);
       continue;
     }
-    if ((type & STR_FUNC_ARRAY) && ISSPACE(c)) {
-      if (toklen(p) == 0) {
+    if (ISSPACE(c)) {
+      if (type & STR_FUNC_LAZYEE_SP) {
+        int save_toklen = p->bidx;
+        if ((p->column == 1) && (save_toklen == 0) && (c != '\n')) {
+          while (((c = nextc(p)) != -1) && (c != '\n') && ISSPACE(c))
+            ;
+          pushback(p, c);
+          continue;
+        }
         do {
           if (c == '\n') {
+            p->bidx = save_toklen;
             p->lineno++;
             p->column = 0;
+            tokadd(p, '\n');
+            tokfix(p);
+            yylval.nd = new_str(p, tok(p), toklen(p));
             heredoc_treat_nextline(p);
             if (p->parsing_heredoc != NULL) {
-              return tHD_LITERAL_DELIM;
+              return tHD_STRING_SP;
             }
+            return tSTRING_SP;
           }
-        } while (ISSPACE(c = nextc(p)));
+          tokadd(p, c);
+          ;
+        } while (((c = nextc(p)) != -1) && ISSPACE(c));
         pushback(p, c);
-        return tLITERAL_DELIM;
-      } else {
-        pushback(p, c);
-        tokfix(p);
-        yylval.nd = new_str(p, tok(p), toklen(p));
-        return tSTRING_MID;
+        continue;
+      }
+      if ((type & (STR_FUNC_ARRAY|STR_FUNC_HEREDOC)) == STR_FUNC_ARRAY) {
+        if (toklen(p) == 0) {
+          do {
+            if (c == '\n') {
+              p->lineno++;
+              p->column = 0;
+              heredoc_treat_nextline(p);
+              if (p->parsing_heredoc != NULL) {
+        	return tHD_LITERAL_DELIM;
+              }
+            }
+          } while (ISSPACE(c = nextc(p)));
+          pushback(p, c);
+          return tLITERAL_DELIM;
+        } else {
+          pushback(p, c);
+          tokfix(p);
+          yylval.nd = new_str(p, tok(p), toklen(p));
+          return tSTRING_MID;
+        }
       }
     }
 
@@ -3857,6 +3915,7 @@ heredoc_identifier(parser_state *p)
 {
   int c;
   int type = str_heredoc;
+  mrb_bool proc = FALSE;
   mrb_bool indent = FALSE;
   mrb_bool quote = FALSE;
   node *newnode;
@@ -3866,6 +3925,10 @@ heredoc_identifier(parser_state *p)
   if (ISSPACE(c) || c == '=') {
     pushback(p, c);
     return 0;
+  }
+  if (c == '<') {
+    proc = TRUE;
+    c = nextc(p);
   }
   if (c == '-') {
     indent = TRUE;
@@ -3894,6 +3957,7 @@ heredoc_identifier(parser_state *p)
     if (! identchar(c)) {
       pushback(p, c);
       if (indent) pushback(p, '-');
+      if (proc) pushback(p, '<');
       return 0;
     }
     newtok(p);
@@ -3907,8 +3971,10 @@ heredoc_identifier(parser_state *p)
   info = (parser_heredoc_info*)newnode->cdr;
   info->term = strndup(tok(p), toklen(p));
   info->term_len = toklen(p);
-  if (! quote)
-    type |= STR_FUNC_EXPAND;
+  if (proc)
+    type |= STR_FUNC_PROC|STR_FUNC_ARRAY;
+  if (quote)
+    type &= ~(STR_FUNC_PROC|STR_FUNC_EXPAND);
   info->type = (string_type)type;
   info->allow_indent = indent;
   info->line_head = TRUE;
@@ -4841,6 +4907,14 @@ parser_yylex(parser_state *p)
       case 'i':
         p->lex_strterm = new_strterm(p, str_ssymbols, term, paren);
         return tSYMBOLS_BEG;
+
+      case 'P':
+        p->lex_strterm = new_strterm(p, str_lazyEE, term, paren);
+        return tWORDS_BEG;
+
+      case 'p':
+        p->lex_strterm = new_strterm(p, str_lazyEE_sp, term, paren);
+        return tWORDS_BEG;
 
       default:
         yyerror(p, "unknown type of %string");

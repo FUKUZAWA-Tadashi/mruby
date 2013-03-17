@@ -204,6 +204,114 @@ ZZZ
 end
 
 
+def p2s(arr)
+  arr.map{|x| Proc === x ? "$#{x.call.to_s}$" : x }
+end
+
+assert('Lazy Expression Expansion') do
+  x = 42
+  a = %P(aa#{1+1}bb)
+  b = %P[ aa #{1+2} bb ]
+  c = %P{aa
+    #{1+3}
+    bb}
+  d = %P/ aa
+    #{1+4}
+    bb
+    /
+  e = %P(#{1+5}#{x})
+  f = %P{aa bb}
+  # 5 spaces afrer \t
+  g = %P(a\r \nb \t     
+  \  c \
+  d)
+  h = %P[ a #{<<AAA}
+    b
+AAA
+    c #{<<<BBB} d
+123 456
+789
+BBB
+    e ]
+  assert_equal ['aa', '$2$', 'bb'], p2s(a)
+  assert_equal ['aa', '$3$', 'bb'], p2s(b)
+  assert_equal ['aa', '$4$', 'bb'], p2s(c)
+  assert_equal ['aa', '$5$', 'bb'], p2s(d)
+  assert_equal ['$6$', '$42$'], p2s(e)
+  assert_equal ['aa', 'bb'], p2s(f)
+  assert_equal ["a\r", "\nb", "\t", " ", "c", "\n", "d"], p2s(g)
+  assert_equal ["a", "$    b\n$", "c", "$[\"123 456\\n\", \"789\\n\"]$", "d", "e"], p2s(h)
+
+
+  a = %p(aa#{1+1}bb)
+  b = %p[ aa #{1+2} bb ]
+  c = %p{aa 
+    #{1+3} 
+    bb}
+  d = %p/ aa   
+    #{1+4}        
+    bb     
+    /
+  e = %p(#{1+5}#{x})
+  f = %p{aa bb}
+  # 5 spaces afrer \t
+  g = %p(a\r \nb \t     
+  \  c \
+  d)
+  h = %p[ a #{<<AAA}
+    b
+AAA
+    c #{<<<BBB} d
+123 456
+789
+BBB
+    e ]
+  assert_equal ['aa', '$2$', 'bb'], p2s(a)
+  assert_equal [' aa ', '$3$', ' bb '], p2s(b)
+  assert_equal ["aa\n", '$4$', "\n", 'bb'], p2s(c)
+  assert_equal [" aa\n", '$5$', "\n", "bb\n"], p2s(d)
+  assert_equal ['$6$', '$42$'], p2s(e)
+  assert_equal ['aa bb'], p2s(f)
+  assert_equal ["a\r \nb \t\n", "  c \n  d"], p2s(g)
+  assert_equal [" a ", "$    b\n$", "\n", "c ", "$[\"123 456\\n\", \"789\\n\"]$", " d\n", "e "], p2s(h)
+
+  a = <<<AAA
+aaa
+AAA
+
+  b = <<<BBB
+aa#{1+2}bb
+BBB
+
+  c = <<<CCC
+CCC
+
+  d = [<<<DDD1, <<<"DD D2", <<<'DD D3'].map{|a| p2s(a)}
+#{1}
+DDD1
+#{3-1}
+DD D2
+#{9/3}
+ddd
+DD D3
+
+  e = [<<<-EEE, <<<-"EE EE", <<<-'EE EE'].map{|a| p2s(a)}
+  e#{0+1}#{1+1}e
+  EEE
+  e#{1+2}#{2+2}e
+  EE EE
+  e#{2+3}#{3+3}e
+  eee
+  EE EE
+  assert_equal ["aaa\n"], a
+  assert_equal [String, Proc, String],  b.map{|x| x.class}
+  assert_equal ["aa", "$3$", "bb\n"], p2s(b)
+  assert_equal [''], c
+  assert_equal [["$1$", "\n"], ["$2$", "\n"], ["\#{9/3}\n", "ddd\n"]], d
+  assert_equal [["  e", "$1$", "$2$", "e\n"], ["  e", "$3$", "$4$", "e\n"], ["  e\#{2+3}\#{3+3}e\n", "  eee\n"]], e
+
+end
+
 assert('Literals Array', '8.7.6.4') do
   a = %W{abc#{1+2}def \}g}
   b = %W(abc #{2+3} def \(g)
